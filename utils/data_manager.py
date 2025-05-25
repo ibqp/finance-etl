@@ -95,7 +95,8 @@ class FileProcessor:
             return pd.DataFrame()
 
 class DataManager:
-    def __init__(self, data_config_path:str, csv_files_dir:str):
+    def __init__(self, csv_files_dir:str, data_config_path:str):
+        logging.info("Starting to initialize DataManager...")
         self.data_config = config_loader(data_config_path)
         self.csv_files_paths = csv_files_loader(csv_files_dir)
         self.ready_data: Dict[str, pd.DataFrame] = {'stm': pd.DataFrame(), 'sec': pd.DataFrame()}
@@ -107,13 +108,13 @@ class DataManager:
         csv_file_pattern = self.data_config.get('file_pattern') # files must have specific naming conventions
         csv_mapping_config = self.data_config.get('mapping') # after we will extract distinct mapping based on file_pattern
         if not csv_file_pattern or not csv_mapping_config:
-            raise ValueError("Missing mandatory configuration parameters!")
+            raise ValueError("DataManager: Missing mandatory configuration parameters!")
 
         # Process each CSV file
         for csv_file_path in self.csv_files_paths:
             # Get filename
             csv_file_name = os.path.basename(csv_file_path)
-            logging.info(f"Processing file: {csv_file_name}")
+            logging.info(f"DataManager: Processing file: {csv_file_name}")
 
             # Get file metadata parts.
             # If None - continue to the next file (unlucky with this one)
@@ -135,7 +136,7 @@ class DataManager:
             # Only append non-empty results
             if not processed_df.empty:
                 self.ready_data[mapping_type] = pd.concat([self.ready_data[mapping_type], processed_df])
-                logging.info(f"Added to ready '{mapping_type}' dataframe: {len(processed_df)} records. Total: {len(self.ready_data[mapping_type])} records.")
+                logging.info(f"DataManager: Added to ready '{mapping_type}' dataframe: {len(processed_df)} records. Total: {len(self.ready_data[mapping_type])} records.")
 
         return self.ready_data['stm'], self.ready_data['sec']
 
@@ -144,14 +145,14 @@ class DataManager:
         # Check if file name matches the pattern
         csv_file_metadata = re.match(csv_file_pattern, csv_file_name)
         if not csv_file_metadata:
-            logging.error("File does not match expected pattern. File cannot be processed.")
+            logging.error("DataManager: File does not match expected pattern. File cannot be processed.")
             return None
 
         # Extract file metadata parts
         # Check if we have exactly 3 groups (we need bank_name, account_type and mapping_type)
         groups = csv_file_metadata.groups()
         if len(groups) != 3:
-            logging.error(f"Expected 3 capturing groups in pattern, but got {len(groups)}. File cannot be processed.")
+            logging.error(f"DataManager: Expected 3 capturing groups in pattern, but got {len(groups)}. File cannot be processed.")
             return None
 
         # Return file metadata groups
@@ -161,9 +162,40 @@ class DataManager:
         # Check if extracted mapping_type/bank exists in config
         # Return None if not found
         if mapping_type not in csv_mapping_config or bank not in csv_mapping_config[mapping_type]:
-            logging.error(f"mapping_type: {mapping_type} or bank: {bank} does not exist in csv_mapping_config. File cannot be processed.")
+            logging.error(f"DataManager: mapping_type: {mapping_type} or bank: {bank} does not exist in csv_mapping_config. File cannot be processed.")
             return None
 
         # Return file specific config based on its maping type and bank
         file_specific_config = csv_mapping_config[mapping_type][bank]
         return file_specific_config
+
+    @staticmethod
+    def get_new_records(source_df: pd.DataFrame, existing_keys_df: pd.DataFrame, df_name:str = 'unknown') -> pd.DataFrame:
+        try:
+            if source_df.empty:
+                logging.warning(f"DataManager: Received empty source_df for {df_name}. Returning empty DataFrame")
+                return pd.DataFrame()
+
+            # If existing_keys_df is empty, all records are new
+            if existing_keys_df.empty:
+                logging.info(f"DataManager: No existing keys provided for {df_name}, all records are considered new")
+                return source_df
+
+            # Get new records
+            new_records = (
+                pd.merge(
+                    source_df
+                    , existing_keys_df
+                    , on='surrogate_key'
+                    , how='left'
+                    , indicator=True
+                )
+                .query("_merge=='left_only'")
+                .drop(columns=['_merge'])
+            )
+
+            logging.info(f"DataManager: Found {len(new_records)} new records out of {len(source_df)} total")
+            return new_records
+        except Exception as e:
+            logging.error(f"DataManager: Error getting new records for {df_name}: {str(e)}. Returning empty DataFrame")
+            return pd.DataFrame()
